@@ -1,0 +1,268 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="問題ソルバー">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<link rel="manifest" href="manifest.json">
+<link rel="apple-touch-icon" href="icon-180.png">
+<title>カメラ問題ソルバー</title>
+<style>
+  :root { --bg:#f6f7f9; --card:#fff; --ink:#1c2430; --sub:#5b6675; --accent:#2f5bea; --line:#dde2ea; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#12161c; --card:#1b212a; --ink:#e8ecf2; --sub:#9aa5b5; --accent:#6e8cff; --line:#2b3340; }
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  body { margin:0; font-family: -apple-system, "Hiragino Sans", sans-serif; background:var(--bg); color:var(--ink);
+         padding: env(safe-area-inset-top) env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); }
+  main { max-width: 720px; margin: 0 auto; padding: 14px; display:grid; gap:12px; }
+  header { display:flex; justify-content:space-between; align-items:center; }
+  h1 { font-size: 1.15rem; margin: 4px 0; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:12px; }
+  .stage { position:relative; background:#000; border-radius:10px; overflow:hidden; aspect-ratio: 4/3; display:none; }
+  video, #preview { width:100%; height:100%; object-fit:contain; display:block; }
+  .row { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+  button, .btn { appearance:none; border:1px solid var(--line); background:var(--card); color:var(--ink); padding:12px 14px;
+                 border-radius:12px; font-size:1rem; cursor:pointer; text-align:center; }
+  button.primary, .btn.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; flex:1; }
+  button:disabled { opacity:.5; }
+  input[type=text], input[type=password] { width:100%; padding:12px; border-radius:10px; border:1px solid var(--line);
+                      background:var(--bg); color:var(--ink); font-size:16px; margin-top:8px; }
+  #status { color:var(--sub); font-size:.9rem; min-height:1.2em; margin-top:8px; }
+  .ans { font-size:2rem; font-weight:700; line-height:1.5; padding:4px 0; border-bottom:1px solid var(--line); }
+  .ans:last-of-type { border-bottom:0; }
+  details { margin-top:10px; } summary { color:var(--sub); font-size:.9rem; }
+  .hint { color:var(--sub); font-size:.85rem; line-height:1.5; }
+  #setup { display:none; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <h1>📷 カメラ問題ソルバー</h1>
+    <button id="gear" aria-label="設定">⚙️</button>
+  </header>
+
+  <section class="card" id="setup">
+    <strong>APIキーの設定</strong>
+    <p class="hint">Anthropic ConsoleのAPIキーを入力してください。このiPhone内にだけ保存され、Anthropic以外には送信されません。</p>
+    <input id="key" type="password" placeholder="sk-ant-..." autocomplete="off" autocapitalize="off" spellcheck="false">
+    <div class="row">
+      <button id="saveKey" class="primary">保存</button>
+      <button id="delKey">キーを削除</button>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="stage" id="stage">
+      <video id="video" playsinline muted autoplay></video>
+    </div>
+    <img id="preview" alt="撮影した画像" style="display:none;width:100%;border-radius:10px">
+    <input id="hint" type="text" placeholder="補足(任意): 例) 中2 数学、英語の長文読解">
+    <div class="row">
+      <label class="btn primary">📷 撮影して解く
+        <input id="cam" type="file" accept="image/*" capture="environment" hidden>
+      </label>
+      <label class="btn">🖼 写真から選ぶ
+        <input id="file" type="file" accept="image/*" hidden>
+      </label>
+    </div>
+    <div class="row">
+      <button id="live">ライブ映像で撮る</button>
+      <button id="shoot" style="display:none" class="primary">この映像で解く</button>
+    </div>
+    <label id="autoWrap" class="hint" style="display:none;margin-top:10px">
+      <input type="checkbox" id="auto" checked> オート: 問題にカメラを向けて静止すると、自動で解く
+    </label>
+    <div id="status"></div>
+    <p class="hint">問題が画面いっぱいに写り、文字がぶれないように撮ってください。</p>
+  </section>
+
+  <section class="card" id="result" style="display:none">
+    <div id="answer"></div>
+  </section>
+</main>
+
+<script>
+const MODEL = "claude-sonnet-5-5";
+const SYSTEM_PROMPT = `あなたは問題を素早く正確に解くアシスタントです。画像には主に選択問題(国語・数学)が写っています。
+必ず次の形式だけで出力してください。
+
+<scratch>
+検討メモ。数学は途中計算と検算、国語は根拠にした本文の箇所を、全体で300字以内の箇条書きで簡潔に書く。
+</scratch>
+<answer>
+回答欄ごとに1行。選択問題は「問1: ウ」のように、問題番号と選んだ記号(または番号)だけを書く。選択肢でない問題は「問1: 答えの値」とだけ書く。解説は書かない。
+</answer>
+
+ルール:
+- 画像はPC画面をスマホで撮ったものです。「決定」「次へ」などのボタン、タイマー、ブラウザの枠など、問題以外の表示は無視する。
+- 回答欄が複数ある場合は、画面に表示されている欄のラベル((1)(2)、A・B、ア・イなど)順に、1欄1行で「(1): …」「(2): …」と答える。ラベルがなければ上から順に「欄1:」「欄2:」とする。
+- 問題番号が見当たらない場合は、上から順に「1:」「2:」と振る。
+- 画像が不鮮明、または問題が写っていない場合は、推測せず <answer> に「読み取れません: (理由を一言)」とだけ書く。
+- 一部の文字や数字が読み取れず答えに影響する場合は、その問題の行に「(要確認)」を付ける。
+- <scratch> と <answer> 以外の文章は出力しない。`;
+
+const $ = (id) => document.getElementById(id);
+const video = $("video");
+let stream = null, busy = false;
+const getKey = () => { try { return localStorage.getItem("anthropic_key") || ""; } catch { return ""; } };
+const setStatus = (s) => ($("status").textContent = s);
+
+// ---- 設定 ----
+function showSetup(show) { $("setup").style.display = show ? "block" : "none"; }
+$("gear").onclick = () => showSetup($("setup").style.display === "none");
+$("saveKey").onclick = () => {
+  const k = $("key").value.trim();
+  if (!k.startsWith("sk-ant-")) return setStatus("APIキーの形式が正しくありません(sk-ant- で始まります)");
+  localStorage.setItem("anthropic_key", k); $("key").value = ""; showSetup(false); setStatus("キーを保存しました");
+};
+$("delKey").onclick = () => { localStorage.removeItem("anthropic_key"); setStatus("キーを削除しました"); };
+if (!getKey()) showSetup(true);
+
+// ---- 画像処理: 長辺1568pxに縮小してJPEG化 ----
+function toJpegBase64(source, w, h) {
+  const scale = Math.min(1, 1568 / Math.max(w, h));
+  const c = document.createElement("canvas");
+  c.width = Math.round(w * scale); c.height = Math.round(h * scale);
+  c.getContext("2d").drawImage(source, 0, 0, c.width, c.height);
+  const url = c.toDataURL("image/jpeg", 0.88);
+  return { url, base64: url.split(",")[1] };
+}
+function fromFile(file) {
+  // createImageBitmapはiPhoneの写真の向き(EXIF)を考慮できる
+  return createImageBitmap(file, { imageOrientation: "from-image" }).then((bmp) => toJpegBase64(bmp, bmp.width, bmp.height));
+}
+
+// ---- Claude API ----
+async function solve({ url, base64 }, opts = {}) {
+  const key = getKey();
+  if (!key) { showSetup(true); return setStatus("先にAPIキーを設定してください"); }
+  if (busy) return;
+  busy = true;
+  if (!opts.keepLive) stopLive();   // オート中はライブ映像を残し、解答だけ下に表示する
+  else $("preview").style.display = "none";
+  if (!opts.keepLive) { $("preview").src = url; $("preview").style.display = "block"; }
+  $("result").style.display = "none";
+  setStatus("解答を作成中…(10〜30秒ほどかかります)");
+  try {
+    const r = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-api-key": key,
+        "anthropic-version": "2023-06-01",
+        "anthropic-dangerous-direct-browser-access": "true",
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 1500,
+        system: SYSTEM_PROMPT,
+        messages: [{ role: "user", content: [
+          { type: "image", source: { type: "base64", media_type: "image/jpeg", data: base64 } },
+          { type: "text", text: "この画像の問題を解いて、答えだけを出力してください。" + ($("hint").value.trim() ? "\n補足(教科・学年など): " + $("hint").value.trim().slice(0, 200) : "") },
+        ] }],
+      }),
+    });
+    const data = await r.json();
+    if (!r.ok) throw new Error(r.status === 401 ? "APIキーが無効です。⚙️から設定し直してください" : (data?.error?.message || "APIエラー(" + r.status + ")"));
+    // 解答中に画面が次の問題へ切り替わっていたら、古い答えは表示せず解き直す
+    if (opts.thumb && curThumb && frac(curThumb, opts.thumb) > NEW_FRAC) {
+      solvedThumb = null; dimResult(true); setStatus("問題が切り替わったため、解き直します…");
+      return;
+    }
+    renderAnswer((data.content || []).filter((b) => b.type === "text").map((b) => b.text).join("\n"));
+    dimResult(false);
+    setStatus("完了");
+  } catch (e) {
+    setStatus("エラー: " + (e instanceof TypeError ? "通信できませんでした。Wi-Fiを確認してください" : e.message));
+  } finally { busy = false; }
+}
+
+// <answer>の中身を大きく1行ずつ表示。<scratch>(検討メモ)は折りたたみで隠す(innerHTMLは使わない)
+function renderAnswer(text) {
+  const box = $("answer"); box.replaceChildren();
+  const ans = /<answer>([\s\S]*?)(?:<\/answer>|$)/.exec(text);
+  const scratch = /<scratch>([\s\S]*?)(?:<\/scratch>|$)/.exec(text);
+  const lines = (ans ? ans[1] : text.replace(/<\/?scratch>/g, "")).split("\n").map((l) => l.trim()).filter(Boolean);
+  for (const line of lines) {
+    const d = document.createElement("div"); d.className = "ans"; d.textContent = line; box.append(d);
+  }
+  if (!ans) { const w = document.createElement("p"); w.className = "hint"; w.textContent = "※ 形式が崩れました。もう一度撮影してください。"; box.append(w); }
+  if (scratch && scratch[1].trim()) {
+    const det = document.createElement("details"), sum = document.createElement("summary"), pre = document.createElement("p");
+    sum.textContent = "検討メモを見る"; pre.textContent = scratch[1].trim(); pre.className = "hint"; pre.style.whiteSpace = "pre-wrap";
+    det.append(sum, pre); box.append(det);
+  }
+  $("result").style.display = "block";
+  $("result").scrollIntoView({ behavior: "smooth" });
+}
+
+// ---- 入力 ----
+for (const id of ["cam", "file"]) {
+  $(id).onchange = async (e) => {
+    const f = e.target.files[0]; e.target.value = "";
+    if (!f) return;
+    try { solve(await fromFile(f)); } catch { setStatus("画像を読み込めませんでした"); }
+  };
+}
+
+// ライブ映像モード(任意)
+async function startLive() {
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment", width: { ideal: 1920 }, height: { ideal: 1440 } }, audio: false });
+    video.srcObject = stream; $("stage").style.display = "block"; $("preview").style.display = "none";
+    $("shoot").style.display = ""; $("autoWrap").style.display = "block"; $("live").textContent = "ライブ映像を閉じる"; setStatus("");
+    startWatch();
+  } catch (e) { setStatus("カメラを使えません(" + e.name + ")。「撮影して解く」をお使いください"); }
+}
+function stopLive() {
+  stopWatch();
+  if (stream) stream.getTracks().forEach((t) => t.stop()); stream = null;
+  $("stage").style.display = "none"; $("shoot").style.display = "none"; $("autoWrap").style.display = "none"; $("live").textContent = "ライブ映像で撮る";
+}
+
+// ---- オート: 映像を監視し、静止した新しい問題を検出したら自動で解く ----
+// 64x48の縮小グレー画像の差分で「動き」と「前回解いた画面との違い」を判定する。
+// 画面の文字の入れ替わりは「大きく変わった画素の割合」で判定する(全体の平均だと白地の画面で小さく出るため)。
+const W = 64, H = 48, STABLE_FRAMES = 4, PIX_TH = 40, MOVE_FRAC = 0.02, NEW_FRAC = 0.015, MIN_INTERVAL_MS = 3000;
+let watchTimer = null, prevThumb = null, stableCount = 0, solvedThumb = null, lastSolveAt = 0, curThumb = null;
+const tctx = Object.assign(document.createElement("canvas"), { width: W, height: H }).getContext("2d", { willReadFrequently: true });
+function thumb() {
+  tctx.drawImage(video, 0, 0, W, H);
+  const d = tctx.getImageData(0, 0, W, H).data, g = new Uint8Array(W * H);
+  for (let i = 0; i < g.length; i++) g[i] = (d[i * 4] * 77 + d[i * 4 + 1] * 150 + d[i * 4 + 2] * 29) >> 8;
+  return g;
+}
+// 2枚の画面で、輝度が大きく違う画素の割合(0〜1)
+const frac = (a, b) => { let n = 0; for (let i = 0; i < a.length; i++) if (Math.abs(a[i] - b[i]) > PIX_TH) n++; return n / a.length; };
+const dimResult = (on) => { $("result").style.opacity = on ? "0.25" : "1"; };
+function startWatch() {
+  stopWatch(); prevThumb = null; stableCount = 0; solvedThumb = null; curThumb = null;
+  watchTimer = setInterval(() => {
+    if (!stream || !video.videoWidth || !$("auto").checked) return;
+    const cur = curThumb = thumb();
+    if (prevThumb) stableCount = frac(cur, prevThumb) < MOVE_FRAC ? stableCount + 1 : 0;
+    prevThumb = cur;
+    // 解答済みの画面から変わったら、古い答えを薄くして誤読を防ぐ
+    if (solvedThumb && !busy && frac(cur, solvedThumb) > NEW_FRAC) { dimResult(true); }
+    if (busy) return;
+    if (stableCount < STABLE_FRAMES) { if (!solvedThumb) setStatus("問題にカメラを向けて、少し静止してください…"); return; }
+    const isNew = !solvedThumb || frac(cur, solvedThumb) > NEW_FRAC;
+    if (isNew && Date.now() - lastSolveAt > MIN_INTERVAL_MS) {
+      solvedThumb = cur; lastSolveAt = Date.now();
+      solve(toJpegBase64(video, video.videoWidth, video.videoHeight), { keepLive: true, thumb: cur });
+    }
+  }, 300);
+}
+function stopWatch() { clearInterval(watchTimer); watchTimer = null; }
+$("live").onclick = () => (stream ? stopLive() : startLive());
+$("shoot").onclick = () => { if (video.videoWidth) solve(toJpegBase64(video, video.videoWidth, video.videoHeight)); };
+
+if ("serviceWorker" in navigator) navigator.serviceWorker.register("sw.js").catch(() => {});
+</script>
+</body>
+</html>
